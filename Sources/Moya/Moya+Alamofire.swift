@@ -78,14 +78,49 @@ internal protocol Requestable {
     func response(callbackQueue: DispatchQueue?, completionHandler: @escaping RequestableCompletion) -> Self
 }
 
+/**
+ This custom serializer searches the body data of the response for a error.statusCode 401 and throws an error if it is found
+ */
+struct CustomDataSerializer: ResponseSerializer {
+    struct GenericJSONBody: Decodable {
+        let error: JSONError
+    }
+    
+    struct JSONError: Decodable {
+        enum CodingKeys: String, CodingKey {
+            case code
+        }
+        let statusCode: String
+        
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            do {
+                statusCode = try container.decode(String.self, forKey: CodingKeys.code)
+            } catch DecodingError.typeMismatch {
+                statusCode = try String(container.decode(Int.self, forKey: CodingKeys.code))
+            }
+        }
+    }
+    
+    func serialize(request: URLRequest?, response: HTTPURLResponse?, data: Data?, error: Error?) throws -> Data? {
+        guard let safeData = data,
+              let jsonBody = try? JSONDecoder().decode(GenericJSONBody.self, from: safeData),
+              jsonBody.error.statusCode == "401" else {
+            return data
+        }
+        
+        throw MoyaError.statusCode(Response(statusCode: 401, data: safeData, request: request, response: response))
+    }
+}
+
 extension DataRequest: Requestable {
     internal func response(callbackQueue: DispatchQueue?, completionHandler: @escaping RequestableCompletion) -> Self {
         if let callbackQueue = callbackQueue {
-            return response(queue: callbackQueue) { handler  in
+            return response(queue: callbackQueue, responseSerializer: CustomDataSerializer()) { handler in
                 completionHandler(handler.response, handler.request, handler.data, handler.error)
             }
         } else {
-            return response { handler  in
+            return response(responseSerializer: CustomDataSerializer()) { handler in
                 completionHandler(handler.response, handler.request, handler.data, handler.error)
             }
         }
